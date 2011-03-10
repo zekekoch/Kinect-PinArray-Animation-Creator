@@ -36,7 +36,7 @@ namespace CLNUIDeviceTest
         private NUIImage rawImage;
 
         private int[,] colorArray = new int[64, 48];
-        private int[,] depthArray = new int[64, 48];
+        private float[,] depthArray = new float[64, 48];
 
         private Thread captureThread;
         private bool running;
@@ -77,8 +77,8 @@ namespace CLNUIDeviceTest
                     {
                         CLNUIDevice.GetCameraColorFrameRGB32(camera, colorImage.ImageData, 500);
                         CLNUIDevice.GetCameraDepthFrameRGB32(camera, depthImage.ImageData, 0);
-                        //CLNUIDevice.GetCameraDepthFrameRAW(camera, rawImage.ImageData, 0);
-                        CLNUIDevice.GetCameraDepthFrameCorrected12(camera, rawImage.ImageData, 0);
+                        CLNUIDevice.GetCameraDepthFrameRAW(camera, rawImage.ImageData, 0);
+                        //CLNUIDevice.GetCameraDepthFrameCorrected12(camera, rawImage.ImageData, 0);
                         Dispatcher.BeginInvoke(DispatcherPriority.Normal, (Action)delegate()
                         {
                             colorImage.Invalidate();
@@ -92,6 +92,15 @@ namespace CLNUIDeviceTest
             captureThread.Start();
         }
 
+        float RawDepthToMeters(int raw_depth)
+        {
+            if (raw_depth < 2047)
+            {
+                return 1.0F / (raw_depth * -0.0030711016F + 3.3309495161F);
+            }
+            return 0;
+        }
+
         public BitmapSource ProcessDepth(NUIImage depthImageRaw)
         {
             // bytes is width * height * bytes per pixel and depthImageRaw is 16bit (2 bytes)
@@ -102,33 +111,66 @@ namespace CLNUIDeviceTest
 
             ushort[] depthFlatArray = new ushort[640 * 480];
 
-            //Pulls the depth data out (2 bytes) and adds the two values togethor. Multiplies by 32 to scale the image across all 16 bits
             int depthi = 0;
 
-            SortedList t = new SortedList();
+            // go forward two pixels at a time since the depthImage is 16bit
             for (int i = 0; i < imageBytes.Length; i += 2)
             {
                 // this is the real height
                 ushort h = (ushort)(imageBytes[i] + (imageBytes[i + 1] << 8));
+
+                // corrected h from http://codelaboratories.com/forums/viewthread/442/
                 depthFlatArray[depthi] = h;
                 depthi++;
             }
-
-            //Creates the new grayscale image
-            BitmapSource bmp = BitmapSource.Create(640, 480, 96, 96, System.Windows.Media.PixelFormats.Gray16, null, depthFlatArray, 640 * 2);
 
             for (int x = 0; x < 64; x++)
             {
                 for (int y = 0; y < 48; y++)
                 {
-                    depthArray[x, y] = depthFlatArray[y *10 * 640 + x * 10]/(64);
+                    depthArray[x, y] = RawDepthToMeters(depthFlatArray[y * 10 * 640 + x * 10]);
                 }
             }
+
+            //Creates the new grayscale image
+            BitmapSource bmp = BitmapSource.Create(640, 480, 96, 96, System.Windows.Media.PixelFormats.Gray16, null, depthFlatArray, 640 * 2);
+
             PersistMap(depthArray, "depthmap");
 
             bmp.Freeze();
 
             return bmp;
+        }
+
+        private void PersistMap(float[,] array, string filename)
+        {
+            if (frameCount < 240)
+                frameCount++;
+            else
+                frameCount = 0;
+
+            filename = filename + frameCount + ".csv";
+
+            string path = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+
+            try
+            {
+                StreamWriter sw = new StreamWriter(path + "\\Depth\\" + filename);
+                for (int x = 0; x < 64; x++)
+                {
+                    for (int y = 0; y < 48; y++)
+                    {
+                        sw.Write(array[x, y] + ",");
+                    }
+                    sw.WriteLine();
+                }
+                sw.Close();
+            }
+            catch (Exception e)
+            {
+                MessageBox.Show(e.ToString());
+            }
+
         }
 
         private void PersistMap(int[,] array, string filename)
