@@ -15,6 +15,7 @@ using System.Windows.Controls;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.Runtime.InteropServices;
+using System.Windows.Interop;
 using System.Threading;
 using System.Diagnostics;
 using System.Data;
@@ -58,15 +59,11 @@ namespace CLNUIDeviceTest
             camera = CLNUIDevice.CreateCamera(serialString);
 
             colorImage = new NUIImage(640, 480);
-            color.Source = colorImage.BitmapSource;
-
             depthImage = new NUIImage(640, 480);
-            depth.Source = depthImage.BitmapSource;
-
-            pinImage = new NUIImage(640, 480);
-            pins.Source = pinImage.BitmapSource;
-
             rawImage = new NUIImage(640, 480);
+
+            color.Source = colorImage.BitmapSource;
+            depth.Source = depthImage.BitmapSource;
 
             running = true;
             captureThread = new Thread(delegate()
@@ -75,15 +72,13 @@ namespace CLNUIDeviceTest
                 {
                     while (running)
                     {
-                        CLNUIDevice.GetCameraColorFrameRGB32(camera, colorImage.ImageData, 500);
+                        CLNUIDevice.GetCameraColorFrameRGB32(camera, colorImage.ImageData, 0);
                         CLNUIDevice.GetCameraDepthFrameRGB32(camera, depthImage.ImageData, 0);
                         CLNUIDevice.GetCameraDepthFrameRAW(camera, rawImage.ImageData, 0);
-                        //CLNUIDevice.GetCameraDepthFrameCorrected12(camera, rawImage.ImageData, 0);
                         Dispatcher.BeginInvoke(DispatcherPriority.Normal, (Action)delegate()
                         {
                             colorImage.Invalidate();
                             depthImage.Invalidate();
-                            pinImage.Invalidate();
                         });
                     }
                 }
@@ -118,8 +113,6 @@ namespace CLNUIDeviceTest
             {
                 // this is the real height
                 ushort h = (ushort)(imageBytes[i] + (imageBytes[i + 1] << 8));
-
-                // corrected h from http://codelaboratories.com/forums/viewthread/442/
                 depthFlatArray[depthi] = h;
                 depthi++;
             }
@@ -203,51 +196,49 @@ namespace CLNUIDeviceTest
             }
                 
         }
-        
-        public void Process(NUIImage colorImage, NUIImage depthImage, NUIImage processedImage)
+
+        public void Process(NUIImage colorImage)
         {
-
-            // these pull out the size of the bitmap (should be 640x480 on the Kinect)
-            int height = (int)depthImage.BitmapSource.Height;
-            int width = (int)depthImage.BitmapSource.Width;
-            int stride = width * 4;
-
             int pinWidth = 48;
             int pinHeight = 64;
             int scaleFactor = 10;
             int colorChannels = 4;
+
+            // these pull out the size of the bitmap (should be 640x480 on the Kinect)
+            int height = (int)colorImage.BitmapSource.Height;
+            int width = (int)colorImage.BitmapSource.Width;
+            int stride = width * 4;
+
+            // bytes is width * height * bytes per pixel and depthImageRaw is 16bit (4 bytes)
+            byte[] imageBytes = new byte[640 * 480 * 4];
+            byte[] imageProcessBytes = new byte[pinWidth * pinHeight * 4];
+
+            // Copy the RGB values into the array.
+            Marshal.Copy(colorImage.ImageData, imageBytes, 0, imageBytes.Length);
 
             for (int pinx = 0; pinx < pinWidth; pinx++)
             {
                 for (int piny = 0; piny < pinHeight; piny++)
                 {
                     // p is the current pixel
-                    int sourcep = pinx * (width * colorChannels) * scaleFactor + (piny * colorChannels) * scaleFactor;
+                int sourcep = pinx * (width * colorChannels) * scaleFactor + (piny * colorChannels) * scaleFactor;
+                int destp = pinx * (pinWidth * colorChannels) + (piny * colorChannels);
+                imageProcessBytes[destp + 0] = imageBytes[sourcep + 0];
+                imageProcessBytes[destp + 1] = imageBytes[sourcep + 1];
+                imageProcessBytes[destp + 2] = imageBytes[sourcep + 2];
+                imageProcessBytes[destp + 3] = 255;// imageBytes[sourcep + 3];
 
-                    for (int xoff = 0; xoff < scaleFactor; xoff++)
-                    {
-                        for (int yoff = 0; yoff < scaleFactor; yoff++)
-                        {
-                            int destp = (pinx * width * colorChannels * scaleFactor) + xoff * width * colorChannels + piny * colorChannels * scaleFactor + yoff * colorChannels;
-                            Marshal.WriteByte(processedImage.ImageData, destp + 0, Marshal.ReadByte(colorImage.ImageData, sourcep + 0));
-                            Marshal.WriteByte(processedImage.ImageData, destp + 1, Marshal.ReadByte(colorImage.ImageData, sourcep + 1));
-                            Marshal.WriteByte(processedImage.ImageData, destp + 2, Marshal.ReadByte(colorImage.ImageData, sourcep + 2));
-                            Marshal.WriteByte(processedImage.ImageData, destp + 3, Marshal.ReadByte(colorImage.ImageData, sourcep + 3));
-                        }
-                    }
+                byte[] bytes = new byte[4];
+                bytes[0] = imageBytes[sourcep + 0];
+                bytes[1] = imageBytes[sourcep + 1];
+                bytes[2] = imageBytes[sourcep + 2];
+                bytes[3] = imageBytes[sourcep + 3];
 
-                    byte[] bytes = new byte[4];
-                    bytes[0] = Marshal.ReadByte(colorImage.ImageData, sourcep + 0);
-                    bytes[1] = Marshal.ReadByte(colorImage.ImageData, sourcep + 1);
-                    bytes[2] = Marshal.ReadByte(colorImage.ImageData, sourcep + 2);
-                    bytes[3] = Marshal.ReadByte(colorImage.ImageData, sourcep + 3);
-
-                    colorArray[piny, pinx] = BitConverter.ToInt32(bytes, 0);
+                colorArray[piny, pinx] = BitConverter.ToInt32(bytes, 0);
                 }
             }
 
             PersistMap(colorArray, "colormap");
-
         }
 
         void OnClosing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -274,13 +265,16 @@ namespace CLNUIDeviceTest
 
         private void refresh_Click(object sender, RoutedEventArgs e)
         {
-            Thread.Sleep(250);
+            DateTime start = DateTime.Now;
+            Debug.Print("beginning process " + DateTime.Now);
             for (int i = 0; i < 240; i++)
             {
-                //Thread.Sleep(66);
-                pinsDepth.Source = ProcessDepth(rawImage);
-                Process(colorImage, depthImage, pinImage);
+                Thread.Sleep(15);
+                ProcessDepth(rawImage);
+                //Process(colorImage, pinImage);
+                Process(colorImage);
             }
+            Debug.Print("ending process " + start.Subtract(DateTime.Now));
         }
 
         private void slider_onChange(object sender, RoutedPropertyChangedEventArgs<double> e)

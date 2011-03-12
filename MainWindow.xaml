@@ -12,13 +12,9 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="320" />
                 <ColumnDefinition Width="320" />
-                <ColumnDefinition Width="160" />
-                <ColumnDefinition Width="160" />
             </Grid.ColumnDefinitions>
             <Image Name="color" Grid.Column="0"/>
             <Image Name="depth" Grid.Column="1"/>
-            <Image Name="pins" Grid.Column="2" Height="240" Width="160"/>
-            <Image Name="pinsDepth" Grid.Column="3" Height="240" Width="160" />
         </Grid>
 
         <Grid Grid.Row="1">
